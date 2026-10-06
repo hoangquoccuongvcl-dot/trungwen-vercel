@@ -71,7 +71,12 @@ export default async function handler(req, res) {
   if (!q) return res.json({ segments: [], ok: false });
 
   try {
-    const items = pinyin(q, { toneType: 'symbol', type: 'all' });
+    // Bật polyphone để nhận diện đa âm theo ngữ cảnh
+    const items = pinyin(q, { 
+      toneType: 'symbol', 
+      type: 'all',
+      mode: 'polyphone'  // ← QUAN TRỌNG
+    });
 
     const charMap = new Map();
     let idx = 0;
@@ -123,7 +128,7 @@ export default async function handler(req, res) {
       charPointer += tokenLen;
     }
 
-    res.json({ segments, ok: true, engine: 'intl+pinyin-v3' });
+    res.json({ segments, ok: true, engine: 'intl+pinyin-polyphone' });
   } catch (e) {
     res.status(500).json({ error: e.message, ok: false });
   }
