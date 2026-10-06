@@ -1,41 +1,8 @@
 import { pinyin } from 'pinyin-pro';
+import { POLYPHONE, MERGE_WORDS } from './polyphone.js';
 
 const segmenter = new Intl.Segmenter('zh-TW', { granularity: 'word' });
-
-const MERGE = [
-  '同生共死','百貨公司','馬馬虎虎','七手八腳','一清二楚','三心二意',
-  '莫名其妙','亂七八糟','興高采烈','千方百計','一心一意',
-  '有時候','的時候','一個人','為什麼','對不起','不好意思','沒關係',
-  '台灣人','越南人','中國人','美國人','日本人','韓國人','外國人',
-  '怎麼樣','怎麼辦','多少錢','什麼事','什麼時候','什麼東西',
-  '差不多','不一樣','有一天','每一次','每個人','一個月','兩個月',
-  '台灣話','火車站','高鐵站','捷運站','公車站','圖書館','電影院',
-  '便利商店','小吃店','飲料店','不知道','不認識','看得懂','聽得懂',
-  '很喜歡','很開心','很高興','很生氣','很難過','很無聊','很有意思',
-  '但是','有時','時候','已經','幾個','特別','晚上','一個','個人',
-  '我們','你們','他們','大家','什麼','怎麼','因為','所以','如果',
-  '雖然','不過','可是','然後','後來','以後','以前','今天','明天',
-  '昨天','早上','中午','下午','這個','那個','哪個','每個','一些',
-  '這些','那些','這裡','那裡','哪裡','裡面','外面','上面','下面',
-  '餐廳','學校','公司','醫院','咖啡','紅茶','綠茶','奶茶','可樂','果汁',
-  '米飯','麵條','包子','餃子','水餃','炒飯','炒麵','喜歡','討厭',
-  '好吃','難吃','好喝','工作','唸書','讀書','寫字','說話','聊天',
-  '逛街','旅行','游泳','跑步','知道','覺得','認為','希望','打算',
-  '準備','決定','忘記','記得','想起','看見','聽見','看到','聽到',
-  '遇到','碰見','發現','感覺','開心','難過','生氣','高興','擔心',
-  '緊張','無聊','有趣','好玩','好看','漂亮','可愛','溫柔','聰明',
-  '努力','認真','小心','星期','禮拜','週末','假日','生日','過年',
-  '台灣','臺灣','中國','美國','越南','日本','韓國','香港','台北',
-  '爸爸','媽媽','哥哥','弟弟','姐姐','妹妹','爺爺','奶奶','叔叔',
-  '阿姨','東西','事情','問題','方法','辦法','地方','時間','日子',
-  '機會','理由','心情','想法','意見','故事','消息','新聞','廣告',
-  '節目','電影','手機','電腦','電視','冰箱','冷氣','房間','客廳',
-  '廚房','廁所','衣服','鞋子','褲子','帽子','袋子','錢包','鑰匙',
-  '眼鏡','手錶','雨傘','朋友','同學','同事','老闆','客人','醫生',
-  '護士','警察','司機','店員'
-];
-
-const MERGE_SORTED = [...MERGE].sort((a, b) => b.length - a.length);
+const MERGE_SORTED = [...MERGE_WORDS].sort((a, b) => b.length - a.length);
 
 function mergeWords(tokens) {
   const result = [];
@@ -66,16 +33,31 @@ function mergeWords(tokens) {
   return result;
 }
 
+// Chuyển pinyin có dấu thành tone number
+const TONE_MAP = {
+  'ā':1,'á':2,'ǎ':3,'à':4,'ē':1,'é':2,'ě':3,'è':4,
+  'ī':1,'í':2,'ǐ':3,'ì':4,'ō':1,'ó':2,'ǒ':3,'ò':4,
+  'ū':1,'ú':2,'ǔ':3,'ù':4,'ǖ':1,'ǘ':2,'ǚ':3,'ǜ':4
+};
+
+function getTone(py) {
+  for (const c of py) {
+    if (TONE_MAP[c]) return TONE_MAP[c];
+  }
+  return 5;
+}
+
 export default async function handler(req, res) {
-  const q = req.query.q || '';
+  const q = (req.query.q || '').trim();
   if (!q) return res.json({ segments: [], ok: false });
+  if (q.length > 500) return res.status(400).json({ error: 'Max 500 chars' });
 
   try {
-    // Bật polyphone để nhận diện đa âm theo ngữ cảnh
+    // Lấy pinyin cả câu để giữ ngữ cảnh
     const items = pinyin(q, { 
       toneType: 'symbol', 
       type: 'all',
-      mode: 'polyphone'  // ← QUAN TRỌNG
+      mode: 'polyphone'
     });
 
     const charMap = new Map();
@@ -105,13 +87,37 @@ export default async function handler(req, res) {
       if (hasAnyHan) {
         const pys = [];
         const tones = [];
-        for (let i = 0; i < tokenLen; i++) {
-          const info = charMap.get(charPointer + i);
-          if (info && info.isHan && info.p) {
-            pys.push(info.p);
-            tones.push(info.t);
+        
+        // Check từ điển đa âm
+        const override = POLYPHONE[token];
+        
+        if (override) {
+          // Dùng pinyin override cho từng chữ
+          for (let i = 0; i < tokenLen; i++) {
+            const ch = token[i];
+            if (override[ch]) {
+              const py = override[ch];
+              pys.push(py);
+              tones.push(getTone(py));
+            } else {
+              // Chữ không override → dùng charMap
+              const info = charMap.get(charPointer + i);
+              if (info && info.isHan && info.p) {
+                pys.push(info.p);
+                tones.push(info.t);
+              }
+            }
+          }
+        } else {
+          for (let i = 0; i < tokenLen; i++) {
+            const info = charMap.get(charPointer + i);
+            if (info && info.isHan && info.p) {
+              pys.push(info.p);
+              tones.push(info.t);
+            }
           }
         }
+        
         segments.push({
           w: token,
           p: pys.join(' '),
@@ -128,8 +134,9 @@ export default async function handler(req, res) {
       charPointer += tokenLen;
     }
 
-    res.json({ segments, ok: true, engine: 'intl+pinyin-polyphone' });
+    res.json({ segments, ok: true, engine: 'intl+dict500' });
   } catch (e) {
-    res.status(500).json({ error: e.message, ok: false });
+    console.error('segment error:', e);
+    res.status(500).json({ error: e.message });
   }
 }
