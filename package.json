@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "pinyin-pro": "^3.19.6",
-    "edge-tts-universal": "^1.0.0"
+    "pinyin-pro": "^3.19.6"
   }
 }

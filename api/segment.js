@@ -6,26 +6,24 @@ export default async function handler(req, res) {
   
   try {
     const segments = [];
-    // Chia câu theo dấu câu trước
-    const parts = q.split(/([，。！？、；：,.!?;:])/).filter(x => x);
+    // Tách từng ký tự Hán — an toàn nhất, không cần jieba
+    // (jieba cần native binary → không chạy trên Vercel)
+    const han = /[\u4e00-\u9fa5]/;
     
-    for (const part of parts) {
-      if (/[\u4e00-\u9fa5]/.test(part)) {
-        // Lấy pinyin từng chữ
-        const pys = pinyinPro.pinyin(part, { toneType: 'symbol', type: 'array', nonZh: 'consecutive' });
-        const nums = pinyinPro.pinyin(part, { toneType: 'num', type: 'array', nonZh: 'consecutive' });
-        const tones = nums.map(p => {
-          const m = String(p).match(/[1-5]/);
-          return m ? parseInt(m[0]) : 5;
-        });
+    for (const ch of q) {
+      if (han.test(ch)) {
+        const p = pinyinPro.pinyin(ch, { toneType: 'symbol', type: 'string' });
+        const n = pinyinPro.pinyin(ch, { toneType: 'num', type: 'string' });
+        const m = String(n).match(/[1-5]/);
+        const tone = m ? parseInt(m[0]) : 5;
         segments.push({
-          w: part,
-          p: pys.join(' '),
-          t: tones,
+          w: ch,
+          p: p || '',
+          t: [tone],
           han: true
         });
-      } else if (part.trim()) {
-        segments.push({ w: part, p: '', t: [], han: false });
+      } else if (ch.trim()) {
+        segments.push({ w: ch, p: '', t: [], han: false });
       }
     }
     

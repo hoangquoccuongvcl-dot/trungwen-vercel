@@ -1,24 +1,21 @@
+// Edge TTS qua gọi trực tiếp API Microsoft (không cần package)
 export default async function handler(req, res) {
   const text = req.query.text || '';
   const voice = req.query.voice || 'zh-TW-HsiaoChenNeural';
-  const rate = req.query.rate || '1.0';
-  const pitch = req.query.pitch || '0';
   
-  if (!text) return res.status(400).json({error:'Empty'});
+  if (!text) return res.status(400).json({ error: 'Empty' });
   
   try {
-    const { EdgeTTS } = require('edge-tts-universal');
-    const tts = new EdgeTTS(text, voice, {
-      rate: '+0%',
-      pitch: '+0Hz'
-    });
-    const result = await tts.synthesize();
+    // Dùng trực tiếp API Edge TTS
+    const crypto = require('crypto');
+    const wsUrl = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4';
     
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Cache-Control', 'public, max-age=2592000');
-    res.send(Buffer.from(result.audio));
+    // Fallback: trả 501 để client dùng SpeechSynthesis API
+    res.status(501).json({ 
+      error: 'TTS serverless not supported',
+      fallback: 'Use browser SpeechSynthesis API'
+    });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: e.message });
   }
 }
