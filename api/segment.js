@@ -1,93 +1,159 @@
-// Bảng ánh xạ thanh điệu từ ký tự có dấu
+import { pinyin } from 'pinyin-pro';
+import { POLYPHONE, MERGE_WORDS } from './polyphone.js';
+
+const segmenter = new Intl.Segmenter('zh-TW', { granularity: 'word' });
+const MERGE_SORTED = [...MERGE_WORDS].sort((a, b) => b.length - a.length);
+
+// Normalize token — bỏ zero-width, trim
+function norm(s) {
+  return String(s || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+}
+
+// Build POLYPHONE với key đã normalize
+const POLY_NORM = {};
+for (const [k, v] of Object.entries(POLYPHONE)) {
+  POLY_NORM[norm(k)] = v;
+}
+
+function mergeWords(tokens) {
+  const result = [];
+  let i = 0;
+  while (i < tokens.length) {
+    let matched = false;
+    const remaining = tokens.slice(i).join('');
+    for (const phrase of MERGE_SORTED) {
+      if (remaining.startsWith(phrase)) {
+        let acc = '', used = 0;
+        while (used < tokens.length - i && acc.length < phrase.length) {
+          acc += tokens[i + used];
+          used++;
+        }
+        if (acc === phrase) {
+          result.push(phrase);
+          i += used;
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (!matched) {
+      result.push(tokens[i]);
+      i++;
+    }
+  }
+  return result;
+}
+
 const TONE_MAP = {
-  'ā': ['a', 1], 'á': ['a', 2], 'ǎ': ['a', 3], 'à': ['a', 4],
-  'ē': ['e', 1], 'é': ['e', 2], 'ě': ['e', 3], 'è': ['e', 4],
-  'ī': ['i', 1], 'í': ['i', 2], 'ǐ': ['i', 3], 'ì': ['i', 4],
-  'ō': ['o', 1], 'ó': ['o', 2], 'ǒ': ['o', 3], 'ò': ['o', 4],
-  'ū': ['u', 1], 'ú': ['u', 2], 'ǔ': ['u', 3], 'ù': ['u', 4],
-  'ǖ': ['v', 1], 'ǘ': ['v', 2], 'ǚ': ['v', 3], 'ǜ': ['v', 4]
+  'ā':1,'á':2,'ǎ':3,'à':4,'ē':1,'é':2,'ě':3,'è':4,
+  'ī':1,'í':2,'ǐ':3,'ì':4,'ō':1,'ó':2,'ǒ':3,'ò':4,
+  'ū':1,'ú':2,'ǔ':3,'ù':4,'ǖ':1,'ǘ':2,'ǚ':3,'ǜ':4
 };
 
-function getToneFromPinyin(py) {
-  for (const [char, [_, tone]] of Object.entries(TONE_MAP)) {
-    if (py.includes(char)) return tone;
+function getTone(py) {
+  for (const c of py) {
+    if (TONE_MAP[c]) return TONE_MAP[c];
   }
-  return 5; // Khinh thanh / không dấu
+  return 5;
 }
 
 export default async function handler(req, res) {
-  const q = req.query.q || '';
-  if (!q.trim()) return res.json({ segments: [], ok: false });
+  const q = (req.query.q || '').trim();
+  if (!q) return res.json({ segments: [], ok: false });
+  if (q.length > 500) return res.status(400).json({ error: 'Max 500 chars' });
 
   try {
-    let pinyinFn;
-    try {
-      const pinyinModule = await import('pinyin-pro');
-      pinyinFn = pinyinModule.pinyin;
-    } catch (e) {
-      pinyinFn = null;
+    const items = pinyin(q, { 
+      toneType: 'symbol', 
+      type: 'all',
+      mode: 'polyphone'
+    });
+
+    const charMap = new Map();
+    let idx = 0;
+    for (const it of items) {
+      const origin = norm(it.origin || '');
+      for (let k = 0; k < Math.max(origin.length, 1); k++) {
+        charMap.set(idx + k, {
+          p: k === 0 ? (it.pinyin || '') : '',
+          t: k === 0 ? (it.num || 5) : 5,
+          isHan: !!it.isZh
+        });
+      }
+      idx += Math.max(origin.length, 1);
     }
 
-    const segmenter = new Intl.Segmenter('zh-Hant', { granularity: 'word' });
-    const rawSegments = Array.from(segmenter.segment(q)).map(s => s.segment);
+    const rawTokens = Array.from(segmenter.segment(q)).map(x => norm(x.segment)).filter(x => x);
+    const mergedTokens = mergeWords(rawTokens);
 
-    const MERGE_WORDS = [
-      '有時候', '書桌上', '書桌', '回過神來', '回過神',
-      '幾個月', '一個月', '臺灣', '已經', '過得', '慢得', '忙得'
-    ];
+    const segments = [];
+    let charPointer = 0;
 
-    const merged = [];
-    let i = 0;
-    while (i < rawSegments.length) {
-      let matched = false;
-      for (let len = 4; len >= 2; len--) {
-        if (i + len <= rawSegments.length) {
-          const candidate = rawSegments.slice(i, i + len).join('');
-          if (MERGE_WORDS.includes(candidate)) {
-            merged.push(candidate);
-            i += len;
-            matched = true;
-            break;
+    for (const token of mergedTokens) {
+      const tokenLen = token.length;
+      const hasAnyHan = /[\u4e00-\u9fa5]/.test(token);
+
+      if (hasAnyHan) {
+        const pys = [];
+        const tones = [];
+        
+        // Check POLYPHONE với token đã norm
+        const override = POLY_NORM[token];
+        
+        if (override) {
+          for (let i = 0; i < tokenLen; i++) {
+            const ch = token[i];
+            if (override[ch]) {
+              const py = override[ch];
+              pys.push(py);
+              tones.push(getTone(py));
+            } else {
+              const info = charMap.get(charPointer + i);
+              if (info && info.isHan && info.p) {
+                pys.push(info.p);
+                tones.push(info.t);
+              }
+            }
+          }
+        } else {
+          for (let i = 0; i < tokenLen; i++) {
+            const info = charMap.get(charPointer + i);
+            if (info && info.isHan && info.p) {
+              pys.push(info.p);
+              tones.push(info.t);
+            }
+          }
+        }
+        
+        segments.push({
+          w: token,
+          p: pys.join(' '),
+          t: tones,
+          han: true,
+          override: override ? Object.keys(override).join(',') : null
+        });
+      } else {
+        for (const ch of token) {
+          if (ch.trim()) {
+            segments.push({ w: ch, p: '', t: [], han: false });
           }
         }
       }
-      if (!matched) {
-        merged.push(rawSegments[i]);
-        i++;
-      }
+      charPointer += tokenLen;
     }
 
-    const segments = merged.map(w => {
-      const isHan = /[\u4e00-\u9fa5]/.test(w);
-      if (!isHan) {
-        return { w, p: '', t: [], han: false };
+    res.json({ 
+      segments, 
+      ok: true, 
+      engine: 'intl+dict500-v2',
+      _debug: {
+        mergeCount: MERGE_SORTED.length,
+        polyCount: Object.keys(POLY_NORM).length,
+        tokenCount: mergedTokens.length
       }
-
-      let py = '';
-      let tones = [];
-
-      if (pinyinFn) {
-        py = pinyinFn(w, { toneType: 'symbol', type: 'string' });
-        const pyArray = pinyinFn(w, { toneType: 'symbol', type: 'array' });
-        tones = pyArray.map(item => getToneFromPinyin(item));
-      }
-
-      // Xử lý các từ đa âm thông dụng (như 得 sau động từ/tính từ)
-      if (w.endsWith('得') && py.includes('dé')) {
-        py = py.replace(/dé$/, 'de');
-        if (tones.length > 0) tones[tones.length - 1] = 5;
-      }
-
-      return {
-        w,
-        p: py,
-        t: tones,
-        han: true
-      };
     });
-
-    return res.json({ segments, ok: true, engine: 'native-segmenter' });
-  } catch (err) {
-    return res.status(500).json({ error: err.message, ok: false });
+  } catch (e) {
+    console.error('segment error:', e);
+    res.status(500).json({ error: e.message });
   }
 }
