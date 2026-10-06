@@ -4,6 +4,17 @@ import { POLYPHONE, MERGE_WORDS } from './polyphone.js';
 const segmenter = new Intl.Segmenter('zh-TW', { granularity: 'word' });
 const MERGE_SORTED = [...MERGE_WORDS].sort((a, b) => b.length - a.length);
 
+// Normalize token — bỏ zero-width, trim
+function norm(s) {
+  return String(s || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+}
+
+// Build POLYPHONE với key đã normalize
+const POLY_NORM = {};
+for (const [k, v] of Object.entries(POLYPHONE)) {
+  POLY_NORM[norm(k)] = v;
+}
+
 function mergeWords(tokens) {
   const result = [];
   let i = 0;
@@ -33,7 +44,6 @@ function mergeWords(tokens) {
   return result;
 }
 
-// Chuyển pinyin có dấu thành tone number
 const TONE_MAP = {
   'ā':1,'á':2,'ǎ':3,'à':4,'ē':1,'é':2,'ě':3,'è':4,
   'ī':1,'í':2,'ǐ':3,'ì':4,'ō':1,'ó':2,'ǒ':3,'ò':4,
@@ -53,7 +63,6 @@ export default async function handler(req, res) {
   if (q.length > 500) return res.status(400).json({ error: 'Max 500 chars' });
 
   try {
-    // Lấy pinyin cả câu để giữ ngữ cảnh
     const items = pinyin(q, { 
       toneType: 'symbol', 
       type: 'all',
@@ -63,7 +72,7 @@ export default async function handler(req, res) {
     const charMap = new Map();
     let idx = 0;
     for (const it of items) {
-      const origin = it.origin || '';
+      const origin = norm(it.origin || '');
       for (let k = 0; k < Math.max(origin.length, 1); k++) {
         charMap.set(idx + k, {
           p: k === 0 ? (it.pinyin || '') : '',
@@ -74,7 +83,7 @@ export default async function handler(req, res) {
       idx += Math.max(origin.length, 1);
     }
 
-    const rawTokens = Array.from(segmenter.segment(q)).map(x => x.segment);
+    const rawTokens = Array.from(segmenter.segment(q)).map(x => norm(x.segment)).filter(x => x);
     const mergedTokens = mergeWords(rawTokens);
 
     const segments = [];
@@ -88,11 +97,10 @@ export default async function handler(req, res) {
         const pys = [];
         const tones = [];
         
-        // Check từ điển đa âm
-        const override = POLYPHONE[token];
+        // Check POLYPHONE với token đã norm
+        const override = POLY_NORM[token];
         
         if (override) {
-          // Dùng pinyin override cho từng chữ
           for (let i = 0; i < tokenLen; i++) {
             const ch = token[i];
             if (override[ch]) {
@@ -100,7 +108,6 @@ export default async function handler(req, res) {
               pys.push(py);
               tones.push(getTone(py));
             } else {
-              // Chữ không override → dùng charMap
               const info = charMap.get(charPointer + i);
               if (info && info.isHan && info.p) {
                 pys.push(info.p);
@@ -122,7 +129,8 @@ export default async function handler(req, res) {
           w: token,
           p: pys.join(' '),
           t: tones,
-          han: true
+          han: true,
+          override: override ? Object.keys(override).join(',') : null
         });
       } else {
         for (const ch of token) {
@@ -134,7 +142,16 @@ export default async function handler(req, res) {
       charPointer += tokenLen;
     }
 
-    res.json({ segments, ok: true, engine: 'intl+dict500' });
+    res.json({ 
+      segments, 
+      ok: true, 
+      engine: 'intl+dict500-v2',
+      _debug: {
+        mergeCount: MERGE_SORTED.length,
+        polyCount: Object.keys(POLY_NORM).length,
+        tokenCount: mergedTokens.length
+      }
+    });
   } catch (e) {
     console.error('segment error:', e);
     res.status(500).json({ error: e.message });
